@@ -1,0 +1,115 @@
+---
+title: "Human Activity Recognition"
+author: "Sergey Cherkasov"
+date: "14 Oct 2015"
+output: html_document
+---
+
+#Synopsis 
+ 
+Activity trackers make possible to collect a large amount of data about personal activity. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it.
+ 
+In this paper we are going to build a model that can predict the manner in which people did the exercise. We use  dataset, generously provided by Groupware@LES in [Qualitative Activity Recognition of Weight Lifting Exercises](http://groupware.les.inf.puc-rio.br/work.jsf?p1=11201).
+
+#Exploratory analysis and cleaning data   
+
+Training set can be found [here](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv).
+
+```{r echo=TRUE}
+training <- read.csv("pml-training.csv")
+```
+
+It contains `r dim(training)[1]` observations with `r dim(training)[2]` variations each. First seven variations which are **`r names(training)[1:7]`** are descriptive, so we can get rid of them.
+
+```{r echo=TRUE}
+training <- training[-(1:7)]
+```
+
+Now let us check the NAs in the data.
+
+```{r echo=TRUE}
+## Here we reveal columns with lot of NAs
+na_count <-sapply(training, function(y) sum(length(which(is.na(y)))))
+na_count <- data.frame(na_count)
+unique(na_count$na_count)
+```
+
+There are **`r length(which(na_count == unique(na_count$na_count)[2]))`** columns with **`r round(unique(na_count$na_count)[2]/dim(training)[1]*100, digits=0)`%** of NAs. We can remove them too. All other columns have no NAs. We convert everything but the variation **classe** to numeric and plug in caret package. We also remove all zero covariates. And finally we split training data set for two sets (90%-10%) for validating the model.
+
+```{r echo=TRUE}
+## Removing columns with a lot of NAs.
+n <- which(na_count == 19216)
+training <- training[-n]
+
+## Convert to numeric all columns but "classe"
+last<-dim(training)[2]
+training[, -last] <- sapply(training[, -last] , function(x) as.numeric(x))
+
+##Removing zero covariates
+library(caret, randomForest, quietly=TRUE)
+nsv <- nearZeroVar(training[,-last],saveMetrics=TRUE)
+training <- training[,!nsv$nzv]
+
+## Building two sets
+set.seed(1234)
+inTrain <- createDataPartition(training$classe, p=0.90, list = FALSE)
+trTrain <- training[inTrain,]
+trTest <- training[-inTrain,]
+```
+
+#Principal Components Analysis
+
+Since the data discribes the movements of people's body parts, some variations can corelate to others. Let us check this assumption.
+
+```{r echo=TRUE}
+M <- abs(cor(trTrain[,-53]))
+diag(M) <- 0
+corVars <- which(M > 0.9,arr.ind=T)
+dim(corVars)[1]
+```
+
+As we can see there are **`r dim(corVars)[1]`** variations which are corelated to each other very tight. That let us assume that Principal Components Analysis can reduce the number of variation. The main parameter is the "thres", which is cutoff for the cumulative percent of variance to be retained by PCA. If we took it too small we could loose a lot of variation. If we took it to high we would not gain any advantages in time of calculation the model. The default value is 0.95. Since our computer is not really powerfull we have found that thresh = 0.9 looks like an acceptable compromise.  
+
+```{r echo=TRUE}
+preProc <- preProcess(trTrain[,-53], method="pca", thresh= 0.9)
+trPCA <- predict(preProc, trTrain[,-53])
+testPCA <- predict(preProc, trTest[,-53])
+dim(trPCA)[2]
+```
+
+So we have reduced the number of variation from **`r dim(trTrain)[2]`** to **`r dim(trPCA)[2]`**, thanks to PCA method. Now it is time to build a model.
+
+#Building the model and cross validation  
+
+We are going to use Random Forest algorithm. It was created by Leo Breiman and Adele Cutler and has many advantages. As it stated [here](https://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm) it is unexcelled in accuracy among current algorithms, it gives estimates of what variables are important in the classification. And there is no need for cross-validation or a separate test set to get an unbiased estimate of the test set error. It is estimated internally, during the run. Caret package provides a number of methods to estimate the accuracy of a machines learning algorithm. We are going to use k-folds validation with k=5.
+
+```{r echo=TRUE}
+ctrl <- trainControl(allowParallel = TRUE, method = "cv", number = 5)
+new.model<-train(trTrain$classe ~ ., data=trPCA,
+                trainControl = ctrl, method="rf")
+new.model
+```
+
+# Model evaluation
+
+Now we can estimate the error of the model, using our reserved data. It is those 10% independent percent of data which were sepatated at the beginning. Error we evaluate is actually the k-fold validation error due to feature of our algorithm.
+
+```{r echo=TRUE}
+err <- confusionMatrix(trTest$classe, predict(new.model, testPCA))
+err
+```
+
+Out of sample error can be calculating by subtraction the model accuracy out of one. 
+
+```{r echo=TRUE}
+a <- 1 - err$overall[1]
+names(a) <- "Error"
+a
+```
+
+For this model out of sample error is **`r round((1 - err$overall[1])*100, digits=2)`%**.
+
+
+#Final classification 
+
+Now it is time to use provided test set with 20 obrevations to predict variation "classe". First of all we tidy the provided data same way as we did with training set and then we apply the model to the test set. Those results were 100% accurate at the course project submission. They are not shown to prevent the violation of Honor Code.
